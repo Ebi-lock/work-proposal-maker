@@ -1,0 +1,10 @@
+{
+  "name": "proposal-maker",
+  "version": "1.0.0",
+  "description": "企画書・提案書（社外向け営業／社内稟議）を対話しながら PowerPoint で作るスキル。3C・SWOT・As-Is/To-Be などの雛形、メイリオ＋3色の統一デザイン、アイコン、提出前チェック付き。",
+  "author": { "name": "Ebi-lock" },
+  "homepage": "https://github.com/Ebi-lock/work-proposal-maker",
+  "repository": "https://github.com/Ebi-lock/work-proposal-maker",
+  "license": "MIT",
+  "keywords": ["powerpoint", "pptx", "proposal", "business-plan", "japanese", "企画書", "提案書"]
+}

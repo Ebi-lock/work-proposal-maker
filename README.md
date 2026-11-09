@@ -42,19 +42,38 @@ Claude と対話しながらセクションごとに内容を固め、雛形に�
 
 ## インストール
 
-スキルのフォルダを、Claude Code が読み込む場所にコピーします。
+### プラグインとして入れる（おすすめ）
+
+Claude Code の中で、次の2行を実行します。
+
+```
+/plugin marketplace add Ebi-lock/work-proposal-maker
+/plugin install proposal-maker@work-proposal-maker
+```
+
+Claude Code 2.1.275 以降なら、1行でも入れられます。
+
+```
+/plugin install proposal-maker --marketplace Ebi-lock/work-proposal-maker
+```
+
+更新は `/plugin marketplace update work-proposal-maker`、削除は `/plugin uninstall proposal-maker@work-proposal-maker` で行えます。
+
+### フォルダをコピーして入れる
+
+プラグインを使わない場合は、スキルのフォルダを Claude Code が読み込む場所にコピーします。
 
 **特定のプロジェクトだけで使う場合**
 ```bash
 git clone https://github.com/Ebi-lock/work-proposal-maker.git
 mkdir -p <あなたのプロジェクト>/.claude/skills
-cp -r work-proposal-maker/.claude/skills/proposal-maker <あなたのプロジェクト>/.claude/skills/
+cp -r work-proposal-maker/skills/proposal-maker <あなたのプロジェクト>/.claude/skills/
 ```
 
 **すべてのプロジェクトで使う場合**
 ```bash
 mkdir -p ~/.claude/skills
-cp -r work-proposal-maker/.claude/skills/proposal-maker ~/.claude/skills/
+cp -r work-proposal-maker/skills/proposal-maker ~/.claude/skills/
 ```
 
 コピー後に Claude Code を起動し直すと、スキル一覧に `proposal-maker` が表示されます。
@@ -69,7 +88,7 @@ Claude Code に、作りたい資料を伝えるだけです。
 経費精算を電子化する稟議資料を上司に出したい
 ```
 
-`/proposal-maker` と入力して直接呼び出すこともできます。
+直接呼び出すこともできます。プラグインで入れた場合は `/proposal-maker:proposal-maker`、フォルダをコピーした場合は `/proposal-maker` です。
 
 進め方は次のとおりです。
 
@@ -86,11 +105,11 @@ Claude Code に、作りたい資料を伝えるだけです。
 Claude を介さず、JSON から直接スライドを生成することもできます。
 
 ```bash
-cd .claude/skills/proposal-maker
+cd skills/proposal-maker
 python3 scripts/build_deck.py assets/example_kikaku.json -o 企画書_サンプル.pptx
 ```
 
-JSON の書き方は [`references/schema.md`](.claude/skills/proposal-maker/references/schema.md) を、完成例は `assets/` の3ファイルを参照してください。
+JSON の書き方は [`references/schema.md`](skills/proposal-maker/references/schema.md) を、完成例は `assets/` の3ファイルを参照してください。
 
 プレビュー（macOS ＋ PowerPoint）：
 ```bash
@@ -100,7 +119,11 @@ bash scripts/preview.sh 企画書_サンプル.pptx ./preview
 ## ファイル構成
 
 ```
-.claude/skills/proposal-maker/
+.claude-plugin/
+├── plugin.json                    # プラグインの設定
+├── marketplace.json               # マーケットプレイスの設定
+└── icon.png
+skills/proposal-maker/
 ├── SKILL.md                       # スキル本体（進め方・デザインルール）
 ├── references/
 │   ├── kikakusho.md               # 企画書のセクション別ヒアリングガイド

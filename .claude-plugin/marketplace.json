@@ -1,0 +1,13 @@
+{
+  "name": "work-proposal-maker",
+  "owner": { "name": "Ebi-lock" },
+  "description": "企画書・提案書を PowerPoint で作る Claude Code プラグイン",
+  "plugins": [
+    {
+      "name": "proposal-maker",
+      "source": "./",
+      "description": "企画書・提案書（社外向け営業／社内稟議）を対話しながら PowerPoint で作るスキル",
+      "category": "productivity"
+    }
+  ]
+}

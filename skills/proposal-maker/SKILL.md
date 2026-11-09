@@ -26,6 +26,8 @@ description: 企画書（商品企画書）と提案書（社外向けのクラ�
 | `scripts/icons.py` | build_deck.py が使う図形アイコン集（直接読む必要はない。名前の一覧は schema.md） |
 | `scripts/preview.sh` | .pptx を PNG にして見た目を確認（macOS ＋ PowerPoint がある場合のみ） |
 
+`<skill-dir>` は、この SKILL.md があるフォルダ。プラグインとして入れた場合は `${CLAUDE_PLUGIN_ROOT}/skills/proposal-maker`、フォルダをコピーして入れた場合は `.claude/skills/proposal-maker` など、読み込み時に示される場所を使う。
+
 ## デザインルール（ユーザー指定）
 - **フォントはメイリオ1種類のみ**。スクリプトが全テキストに設定する（日本語・英数字とも）
 - **色はベース・サブ・ポイントの3色**。本文の濃いグレーと背景の白は色数に数えない。淡い背景はこの3色を薄めて作るので、色は増えない
