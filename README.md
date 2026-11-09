@@ -110,8 +110,7 @@ JSON の書き方は [`references/schema.md`](skills/proposal-maker/references/s
 ```
 .claude-plugin/
 ├── plugin.json                    # プラグインの設定
-├── marketplace.json               # マーケットプレイスの設定
-└── icon.png
+└── marketplace.json               # マーケットプレイスの設定
 skills/proposal-maker/
 ├── SKILL.md                       # スキル本体（進め方・デザインルール）
 ├── references/
