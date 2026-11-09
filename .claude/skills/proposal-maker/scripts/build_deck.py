@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""商品企画書 PPTX ビルダー
+"""企画書・提案書 PPTX ビルダー
 
 使い方:
     python3 build_deck.py content.json -o 企画書.pptx
@@ -10,12 +10,18 @@ content.json の形式は references/schema.md を参照。
   - 色は theme.base / theme.sub / theme.accent の3色＋白・本文用ニュートラル（濃灰）
     背景の淡色はベース/サブ/ポイントの「同色相の薄め（tint）」のみで作る
   - 文字が枠に収まらない場合は自動で縮小し、それでも溢れる場合は警告を出す
+  - 文字の詰め込み（項目数・1項目の長さ・1枚の総字数）を警告する
+  - アイコンは scripts/icons.py の図形アイコン（単色・3色ルール内）を使う
 """
 import argparse
 import json
 import math
+import os
 import sys
 import unicodedata
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import icons  # noqa: E402
 
 from lxml import etree
 from pptx import Presentation
@@ -33,6 +39,11 @@ WHITE = "FFFFFF"
 
 BX, BW = 0.5, 12.33          # 本文エリア 左端・幅
 BY, BOTTOM = 1.85, 6.8       # 本文エリア 上端・下端
+
+# 詰め込み防止の目安（超えると警告）
+MAX_BULLETS = 5        # 1つの枠の箇条書き
+MAX_BULLET_CHARS = 45  # 箇条書き1項目の字数
+MAX_SLIDE_CHARS = 250  # 1枚の本文の総字数（見出し・出典・フッターを除く）
 
 WARNINGS = []
 TODO = []  # 【要確認】の残り
@@ -59,7 +70,19 @@ DEFAULT_SECTIONS = {
     "options": "プラン・費用",
     "company": "会社概要・実績",
     "bullets": "",
+    "agenda": "目次",
+    "visual": "イメージ",
 }
+
+# 目次で使う、スライド種類ごとの既定アイコン
+TYPE_ICONS = {
+    "summary": "document", "background": "chart", "three_c": "search", "swot": "checklist",
+    "asis_tobe": "trend", "goals": "target", "target_concept": "user", "plan_6w2h": "checklist",
+    "product_4p": "package", "schedule": "calendar", "budget": "yen", "effect_risk": "shield",
+    "next_action": "flag", "current_issues": "warning", "solution": "idea", "process": "checklist",
+    "benefits": "trend", "options": "star", "company": "building", "bullets": "document", "visual": "picture",
+}
+SKIP_COUNT = {"セクション名", "メッセージ", "フッター", "出典", "ページ番号", "目次"}
 
 
 # ---------------------------------------------------------------- color utils
@@ -142,8 +165,9 @@ def _norm_paras(paras, bullet):
 
 
 class Deck:
-    def __init__(self, data):
+    def __init__(self, data, base_dir="."):
         self.data = data
+        self.base_dir = base_dir
         t = data.get("theme") or {}
         for k in ("base", "sub", "accent"):
             if k not in t:
@@ -159,6 +183,10 @@ class Deck:
         self.page = 0
         self.section_no = 0
         self.cur_label = ""
+        self.page_chars = {}
+        slides = data.get("slides") or []
+        self.total = sum(1 for sd in slides if sd.get("type") not in ("cover", "agenda"))
+        self.progress = t.get("progress", True)
         self._check_palette()
 
     # ---- palette sanity
@@ -201,11 +229,12 @@ class Deck:
             el.set("typeface", self.font)
 
     def text(self, s, x, y, w, h, paras, size=14, color=NEUTRAL, bold=False,
-             align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP, bullet=False, min_size=10,
+             align=PP_ALIGN.LEFT, anchor=MSO_ANCHOR.TOP, bullet=False, min_size=12,
              spacing=0.35, what="", one_line=False):
         items = _norm_paras(paras, bullet)
         if not items:
             return None
+        self._density(items, what)
         pad_x, pad_y = 0.06, 0.04
         avail_h = (h - pad_y * 2) * 72
 
@@ -259,12 +288,68 @@ class Deck:
                 buChar.set("char", "•")
         return tb
 
+    def _density(self, items, what):
+        """詰め込みすぎのチェック（字数の集計と、項目数・1項目の長さの警告）"""
+        if what in SKIP_COUNT or self.cur_label == "表紙":
+            return
+        self.page_chars[self.page] = self.page_chars.get(self.page, 0) + sum(len(it["text"]) for it in items)
+        bullets = [it for it in items if it["bullet"]]
+        where = f"p.{self.page}「{self.cur_label}」{what or ''}"
+        if len(bullets) > MAX_BULLETS:
+            WARNINGS.append(f"{where}: 箇条書きが{len(bullets)}項目あります。3〜4項目に絞ると伝わりやすくなります。")
+        long = [it["text"] for it in bullets if len(it["text"]) > MAX_BULLET_CHARS]
+        if long:
+            WARNINGS.append(f"{where}: {MAX_BULLET_CHARS}字を超える項目が{len(long)}つあります（例: 「{long[0][:18]}…」）。"
+                            "要点だけを残し、説明は口頭か補足資料に回してください。")
+
+    # ---- images
+    def icon(self, s, name, x, y, d, color=None, hole=WHITE, badge=None):
+        """図形アイコンを描く。badge を渡すと円形の下地付き。名前が不明なら警告して何もしない"""
+        if not name:
+            return None
+        g = icons.draw(s.shapes, name, x, y, d, color or readable(self.base), hole, badge)
+        if g is None:
+            WARNINGS.append(f"p.{self.page}「{self.cur_label}」: アイコン名 {name!r} は使えません。"
+                            f"使える名前: {', '.join(icons.names())}")
+        return g
+
+    def badge_icon(self, s, name, x, y, d, on=WHITE):
+        """円形バッジのアイコン（on は置く場所の背景色）"""
+        badge = tint(self.base, 0.84) if on == WHITE else WHITE
+        return self.icon(s, name, x, y, d, color=readable(self.base, badge, 3.0), badge=badge)
+
+    def picture(self, s, path, x, y, w, h, what="画像"):
+        """ユーザー画像を枠内に縦横比を保って収める。見つからなければ枠と注記を置き【要確認】に入れる"""
+        full = path if os.path.isabs(path) else os.path.join(self.base_dir, path)
+        if not os.path.exists(full):
+            self.box(s, x, y, w, h, fill=tint(self.sub, 0.92), line=LINE_GRAY)
+            self.icon(s, "picture", x + w / 2 - 0.4, y + h / 2 - 0.65, 0.8, color=tint(self.base, 0.45),
+                      hole=tint(self.sub, 0.92))
+            self.text(s, x + 0.1, y + h / 2 + 0.25, w - 0.2, 0.6, [f"画像：{os.path.basename(path)}"], size=12,
+                      color=MUTED, align=PP_ALIGN.CENTER, what="ページ番号")
+            TODO.append(f"p.{self.page}「{self.cur_label}」{what}: 画像ファイルが見つかりません（{path}）")
+            return None
+        try:
+            from PIL import Image
+            with Image.open(full) as im:
+                iw, ih = im.size
+        except Exception:
+            iw, ih = 4, 3
+        r = min(w / iw, h / ih)
+        pw, ph = iw * r, ih * r
+        return s.shapes.add_picture(full, Inches(x + (w - pw) / 2), Inches(y + (h - ph) / 2), Inches(pw), Inches(ph))
+
     # ---- composite parts
-    def card(self, s, x, y, w, h, header, body, header_fill=None, bullet=True, size=14, body_fill=None):
+    def card(self, s, x, y, w, h, header, body, header_fill=None, bullet=True, size=14, body_fill=None, icon=None):
         header_fill = header_fill or self.base
         hh = 0.45
         self.box(s, x, y, w, hh, fill=header_fill)
-        self.text(s, x + 0.1, y, w - 0.2, hh, [header], size=14, bold=True,
+        ix = 0
+        if icon:
+            hc = on_color(header_fill)
+            if self.icon(s, icon, x + 0.12, y + 0.07, 0.31, color=hc, hole=header_fill):
+                ix = 0.4
+        self.text(s, x + 0.1 + ix, y, w - 0.2 - ix, hh, [header], size=14, bold=True,
                   color=on_color(header_fill), anchor=MSO_ANCHOR.MIDDLE, min_size=11, what=f"見出し「{header}」")
         bf = body_fill or tint(self.sub, 0.88)
         self.box(s, x, y + hh, w, h - hh, fill=bf)
@@ -289,10 +374,14 @@ class Deck:
         self.text(s, x + 0.25, y + 0.06, w - 0.4, h - 0.12, paras, size=14, spacing=0.2,
                   anchor=MSO_ANCHOR.MIDDLE, color=NEUTRAL, what="示唆ボックス")
 
-    def kpi(self, s, x, y, w, h, value, label, highlight=False):
+    def kpi(self, s, x, y, w, h, value, label, highlight=False, icon=None):
         bg = tint(self.sub, 0.88)
         self.box(s, x, y, w, h, fill=bg)
         col = readable(self.accent if highlight else self.base, bg, 3.0)
+        if icon and h >= 1.5:
+            d = min(0.5, h * 0.26)
+            if self.icon(s, icon, x + w / 2 - d / 2, y + 0.12, d, color=readable(self.base, bg, 3.0), hole=bg):
+                y, h = y + d + 0.05, h - d - 0.05
         vh = h * 0.58
         self.text(s, x + 0.1, y + 0.08, w - 0.2, vh, [value], size=30, bold=True, color=col,
                   align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.BOTTOM, min_size=14, what="数値", one_line=True)
@@ -354,7 +443,8 @@ class Deck:
         message = sd.get("message", "")
         if not message:
             WARNINGS.append(f"p.{self.page}「{label}」: message（このスライドで言いたい一文）が空です。")
-        self.text(s, 0.5, 0.3, 12.3, 0.35, [f"{self.section_no:02d}　{label}"], size=12, bold=True,
+        pw = self.progress_bar(s) if (self.progress and self.total > 1) else 0
+        self.text(s, 0.5, 0.3, 12.3 - pw, 0.35, [f"{self.section_no:02d}　{label}"], size=12, bold=True,
                   color=readable(self.base), min_size=10, what="セクション名")
         msz = 24
         while msz > 19 and est_lines(message, msz, 12.3 - 0.2) > 1:
@@ -367,8 +457,25 @@ class Deck:
                   min_size=18, anchor=MSO_ANCHOR.MIDDLE, spacing=0.1, what="メッセージ")
         self.box(s, 0.5, 1.6, 12.33, 0.04, fill=self.base)
         self.text(s, 0.5, 7.0, 9.0, 0.3, [self.meta.get("title", "")], size=9, color=MUTED, min_size=8, what="フッター")
-        self.text(s, 11.83, 7.0, 1.0, 0.3, [str(self.page)], size=9, color=MUTED, align=PP_ALIGN.RIGHT)
+        self.text(s, 11.83, 7.0, 1.0, 0.3, [str(self.page)], size=9, color=MUTED, align=PP_ALIGN.RIGHT, what="ページ番号")
         return s
+
+    def progress_bar(self, s):
+        """右上の現在地バー（全体の何枚目か）。読み手が今どこにいるか分かるようにする。戻り値は使った幅"""
+        n, cur = self.total, self.section_no
+        w = min(3.2, 0.24 * n)
+        gap = 0.04
+        sw = (w - gap * (n - 1)) / n
+        x0 = 0.5 + 12.33 - w
+        for i in range(n):
+            if i + 1 == cur:
+                fill = self.base
+            elif i + 1 < cur:
+                fill = tint(self.base, 0.6)
+            else:
+                fill = LINE_GRAY
+            self.box(s, x0 + i * (sw + gap), 0.44, sw, 0.08 if i + 1 == cur else 0.05, fill=fill)
+        return w + 0.3
 
     def bottom_parts(self, s, sd, label="示唆"):
         """sources / insight を下から配置し、本文に使える下端を返す"""
@@ -382,7 +489,10 @@ class Deck:
         if ins:
             ih = self.insight_height(ins)
             self.insight(s, BX, bottom - ih, BW, ih, ins, label=sd.get("insight_label", label))
-            bottom -= ih + 0.18
+            # 本文 → 示唆 の流れを示す小さな下向き矢印
+            self.box(s, BX + BW / 2 - 0.22, bottom - ih - 0.2, 0.44, 0.16, fill=tint(self.accent, 0.35),
+                     shape=MSO_SHAPE.FLOWCHART_MERGE)
+            bottom -= ih + 0.26
         return bottom
 
     # ---------------------------------------------------------- slide types
@@ -391,6 +501,15 @@ class Deck:
         self.cur_label = "表紙"
         m = {**self.meta, **{k: v for k, v in sd.items() if k != "type"}}
         self.box(s, 0, 0, 0.45, SLIDE_H, fill=self.base)
+        tw = 11.3
+        if m.get("image"):
+            self.picture(s, m["image"], 8.6, 1.3, 4.3, 4.6, what="表紙画像")
+            tw = 7.1
+        elif m.get("icon"):
+            self.badge_icon(s, m["icon"], 9.6, 2.0, 2.6)
+            tw = 8.0
+        if m.get("logo"):
+            self.picture(s, m["logo"], 10.3, 6.25, 2.6, 0.8, what="ロゴ")
         if m.get("confidential"):
             self.text(s, 10.3, 0.35, 2.5, 0.35, [m.get("confidential") if isinstance(m.get("confidential"), str) else "社外秘"],
                       size=11, color=MUTED, align=PP_ALIGN.RIGHT)
@@ -398,15 +517,16 @@ class Deck:
             self.text(s, 1.2, 0.9, 9.0, 0.6, [m["to"]], size=20, bold=True, color=NEUTRAL, min_size=14, what="宛先")
         if m.get("category"):
             self.text(s, 1.2, 1.7, 11, 0.45, [m["category"]], size=16, bold=True, color=readable(self.base))
-        self.text(s, 1.2, 2.2, 11.3, 1.7, [m.get("title", "（タイトル）")], size=38, bold=True, color=NEUTRAL,
+        self.text(s, 1.2, 2.2, tw, 1.7, [m.get("title", "（タイトル）")], size=38, bold=True, color=NEUTRAL,
                   min_size=26, anchor=MSO_ANCHOR.BOTTOM, spacing=0.1, what="タイトル")
         self.box(s, 1.26, 4.05, 1.3, 0.07, fill=self.accent)
         if m.get("subtitle"):
-            self.text(s, 1.2, 4.25, 11.3, 0.9, [m["subtitle"]], size=18, color=NEUTRAL, min_size=14, what="サブタイトル")
+            self.text(s, 1.2, 4.25, tw, 0.9, [m["subtitle"]], size=18, color=NEUTRAL, min_size=14, what="サブタイトル")
         org = "　".join(x for x in (m.get("company"), m.get("department")) if x)
         info = [x for x in (org, m.get("author"), m.get("date")) if x]
         if info:
-            self.text(s, 1.2, 5.7, 11.3, 1.0, ["　".join(info[:2])] + info[2:], size=14, color=NEUTRAL, spacing=0.2)
+            self.text(s, 1.2, 5.7, tw if not m.get("logo") else 8.9, 1.0, ["　".join(info[:2])] + info[2:],
+                      size=14, color=NEUTRAL, spacing=0.2)
 
     def s_summary(self, sd):
         s = self.content_slide(sd)
@@ -419,12 +539,14 @@ class Deck:
         gap = 0.25
         cw = (BW - gap * (n - 1)) / n
         for i, it in enumerate(items):
-            self.card(s, BX + i * (cw + gap), BY, cw, top_h, it.get("label", ""), it.get("text", ""), size=15)
+            self.card(s, BX + i * (cw + gap), BY, cw, top_h, it.get("label", ""), it.get("text", ""), size=15,
+                      icon=it.get("icon"))
         if kpis:
             m = len(kpis)
             kw = (BW - gap * (m - 1)) / m
             for i, k in enumerate(kpis):
-                self.kpi(s, BX + i * (kw + gap), bottom - kh, kw, kh, k.get("value", ""), k.get("label", ""), k.get("highlight", False))
+                self.kpi(s, BX + i * (kw + gap), bottom - kh, kw, kh, k.get("value", ""), k.get("label", ""),
+                         k.get("highlight", False), icon=k.get("icon"))
 
     def s_background(self, sd):
         s = self.content_slide(sd)
@@ -439,31 +561,42 @@ class Deck:
             dx = BX + lw + 0.3
             dw = BW - lw - 0.3
             for i, d in enumerate(data):
-                self.kpi(s, dx, BY + i * (dh + gap), dw, dh, d.get("value", ""), d.get("label", ""), d.get("highlight", False))
+                self.kpi(s, dx, BY + i * (dh + gap), dw, dh, d.get("value", ""), d.get("label", ""),
+                         d.get("highlight", False), icon=d.get("icon"))
 
-    def _columns(self, s, sd, cols, bottom, fills=None):
+    def _icons_for(self, sd, keys, defaults):
+        """slide の icons 指定（false で無し、辞書で上書き）を反映したアイコン名の並び"""
+        spec = sd.get("icons", True)
+        if spec is False:
+            return [None] * len(keys)
+        spec = spec if isinstance(spec, dict) else {}
+        return [spec.get(k, d) for k, d in zip(keys, defaults)]
+
+    def _columns(self, s, sd, cols, bottom, fills=None, icon_names=None):
         gap = 0.25
         n = len(cols)
         cw = (BW - gap * (n - 1)) / n
         for i, (head, body) in enumerate(cols):
             fill = fills[i] if fills else None
-            self.card(s, BX + i * (cw + gap), BY, cw, bottom - BY, head, body or ["（未記入）"], header_fill=fill)
+            self.card(s, BX + i * (cw + gap), BY, cw, bottom - BY, head, body or ["（未記入）"], header_fill=fill,
+                      icon=icon_names[i] if icon_names else None)
 
     def s_three_c(self, sd):
         s = self.content_slide(sd)
         bottom = self.bottom_parts(s, sd, label="成功のカギ（KSF）")
         self._columns(s, sd, [("Customer｜顧客・市場", sd.get("customer")),
                               ("Competitor｜競合", sd.get("competitor")),
-                              ("Company｜自社", sd.get("company"))], bottom)
+                              ("Company｜自社", sd.get("company"))], bottom,
+                      icon_names=self._icons_for(sd, ["customer", "competitor", "company"], ["users", "flag", "building"]))
 
-    def _grid(self, s, cells, bottom, fills):
+    def _grid(self, s, cells, bottom, fills, icon_names=None):
         gap = 0.2
         cw = (BW - gap) / 2
         ch = (bottom - BY - gap) / 2
         for i, (head, body) in enumerate(cells):
             r, c = divmod(i, 2)
             self.card(s, BX + c * (cw + gap), BY + r * (ch + gap), cw, ch, head, body or ["（未記入）"],
-                      header_fill=fills[r], size=13)
+                      header_fill=fills[r], size=13, icon=icon_names[i] if icon_names else None)
 
     def s_swot(self, sd):
         s = self.content_slide(sd)
@@ -477,7 +610,8 @@ class Deck:
         bottom = self.bottom_parts(s, sd)
         self._grid(s, [("Product｜商品", sd.get("product")), ("Price｜価格", sd.get("price")),
                        ("Place｜流通・チャネル", sd.get("place")), ("Promotion｜販促", sd.get("promotion"))],
-                   bottom, [self.base, self.sub])
+                   bottom, [self.base, self.sub],
+                   self._icons_for(sd, ["product", "price", "place", "promotion"], ["package", "yen", "store", "chat"]))
 
     def s_asis_tobe(self, sd):
         s = self.content_slide(sd)
@@ -514,7 +648,8 @@ class Deck:
                 lab = k.get("metric", "")
                 if k.get("deadline"):
                     lab += f"\n（{k['deadline']}）"
-                self.kpi(s, rx + i * (kw + gap), y, kw, kh, k.get("target", ""), lab, k.get("highlight", False))
+                self.kpi(s, rx + i * (kw + gap), y, kw, kh, k.get("target", ""), lab, k.get("highlight", False),
+                         icon=k.get("icon"))
         y += kh + 0.25
         if ql:
             self.card(s, rx, y, rw, bottom - y, "定性目標", ql, header_fill=self.sub)
@@ -526,7 +661,9 @@ class Deck:
         lw = 5.3
         hh = 0.45
         self.box(s, BX, BY, lw, hh, fill=self.sub)
-        self.text(s, BX + 0.1, BY, lw - 0.2, hh, ["ターゲット（ペルソナ）"], size=14, bold=True,
+        pi = p.get("icon", "user") if sd.get("icons", True) is not False else None
+        ix = 0.4 if (pi and self.icon(s, pi, BX + 0.12, BY + 0.07, 0.31, color=on_color(self.sub), hole=self.sub)) else 0
+        self.text(s, BX + 0.1 + ix, BY, lw - 0.2 - ix, hh, ["ターゲット（ペルソナ）"], size=14, bold=True,
                   color=on_color(self.sub), anchor=MSO_ANCHOR.MIDDLE)
         bf = tint(self.sub, 0.88)
         self.box(s, BX, BY + hh, lw, bottom - BY - hh, fill=bf)
@@ -675,12 +812,14 @@ class Deck:
                 m = len(metrics)
                 kw = (rw - gap * (m - 1)) / m
                 for i, k in enumerate(metrics):
-                    self.kpi(s, rx + i * (kw + gap), y, kw, bottom - y, k.get("value", ""), k.get("label", ""), k.get("highlight", False))
+                    self.kpi(s, rx + i * (kw + gap), y, kw, bottom - y, k.get("value", ""), k.get("label", ""),
+                             k.get("highlight", False), icon=k.get("icon"))
             else:
                 m = len(metrics)
                 kh = (bottom - y - gap * (m - 1)) / m
                 for i, k in enumerate(metrics):
-                    self.kpi(s, rx, y + i * (kh + gap), rw, kh, k.get("value", ""), k.get("label", ""), k.get("highlight", False))
+                    self.kpi(s, rx, y + i * (kh + gap), rw, kh, k.get("value", ""), k.get("label", ""),
+                             k.get("highlight", False), icon=k.get("icon"))
 
     def s_effect_risk(self, sd):
         s = self.content_slide(sd)
@@ -753,7 +892,9 @@ class Deck:
             x, y = BX + c * (cw + gap), BY + r * (ch + gap)
             bf = tint(self.sub, 0.88)
             self.box(s, x, y, cw, 0.45, fill=self.base)
-            self.text(s, x + 0.1, y, cw - 0.2, 0.45, [f"課題{i + 1}｜{it.get('title', '')}"], size=14, bold=True,
+            ix = 0.4 if (it.get("icon") and self.icon(s, it["icon"], x + 0.12, y + 0.07, 0.31,
+                                                       color=on_color(self.base), hole=self.base)) else 0
+            self.text(s, x + 0.1 + ix, y, cw - 0.2 - ix, 0.45, [f"課題{i + 1}｜{it.get('title', '')}"], size=14, bold=True,
                       color=on_color(self.base), anchor=MSO_ANCHOR.MIDDLE, min_size=10, what="課題見出し")
             self.box(s, x, y + 0.45, cw, ch - 0.45, fill=bf)
             detail = it.get("detail") or []
@@ -765,7 +906,8 @@ class Deck:
             m = len(data)
             kw = (BW - gap * (m - 1)) / m
             for i, k in enumerate(data):
-                self.kpi(s, BX + i * (kw + gap), area_b + 0.2, kw, kh, k.get("value", ""), k.get("label", ""), k.get("highlight", False))
+                self.kpi(s, BX + i * (kw + gap), area_b + 0.2, kw, kh, k.get("value", ""), k.get("label", ""),
+                         k.get("highlight", False), icon=k.get("icon"))
 
     def s_solution(self, sd):
         s = self.content_slide(sd)
@@ -792,7 +934,7 @@ class Deck:
                 body.append({"text": "対応する課題：" + it["issue"], "scale": 0.85, "color": MUTED})
             t = it.get("text") or []
             body += [{"text": v, "bullet": isinstance(t, list)} for v in (t if isinstance(t, list) else [t])]
-            self.card(s, x, yy, cw, ch, it.get("title", ""), body, bullet=False, size=14)
+            self.card(s, x, yy, cw, ch, it.get("title", ""), body, bullet=False, size=14, icon=it.get("icon"))
 
     def s_process(self, sd):
         s = self.content_slide(sd)
@@ -817,13 +959,23 @@ class Deck:
                           color=readable(self.base), min_size=10)
                 y += 0.45
             t = st.get("text") or []
-            self.box(s, x, y, sw, bottom - y, fill=tint(self.sub, 0.88))
-            self.text(s, x + 0.12, y + 0.1, sw - 0.24, bottom - y - 0.2, t if isinstance(t, list) else [t],
-                      size=13, bullet=isinstance(t, list), min_size=9, what=f"STEP{i + 1} 説明")
+            bf = tint(self.sub, 0.88)
+            self.box(s, x, y, sw, bottom - y, fill=bf)
+            ty = y + 0.1
+            if st.get("icon"):
+                d = 0.8
+                if self.badge_icon(s, st["icon"], x + sw / 2 - d / 2, y + 0.18, d, on=bf):
+                    ty = y + d + 0.3
+            self.text(s, x + 0.12, ty, sw - 0.24, bottom - ty - 0.1, t if isinstance(t, list) else [t],
+                      size=13, bullet=isinstance(t, list), min_size=11, what=f"STEP{i + 1} 説明")
 
     def kpi_change(self, s, x, y, w, h, m):
         bg = tint(self.sub, 0.88)
         self.box(s, x, y, w, h, fill=bg)
+        if m.get("icon"):
+            d = 0.55
+            if self.badge_icon(s, m["icon"], x + w / 2 - d / 2, y + 0.15, d, on=bg):
+                y, h = y + d + 0.1, h - d - 0.1
         self.text(s, x + 0.1, y + 0.1, w - 0.2, 0.4, [m.get("label", "")], size=13, bold=True,
                   color=NEUTRAL, align=PP_ALIGN.CENTER, min_size=10, what="効果ラベル")
         col = readable(self.accent if m.get("highlight") else self.base, bg, 3.0)
@@ -842,7 +994,8 @@ class Deck:
         metrics = sd.get("metrics") or []
         points = sd.get("points") or []
         gap = 0.25
-        mh = min(2.4, bottom - BY) if points else bottom - BY
+        has_icon = any(k.get("icon") for k in metrics)
+        mh = min(2.4 + (0.65 if has_icon else 0), bottom - BY - 1.4) if points else bottom - BY
         if metrics:
             m = len(metrics)
             kw = (BW - gap * (m - 1)) / m
@@ -850,7 +1003,19 @@ class Deck:
                 self.kpi_change(s, BX + i * (kw + gap), BY, kw, mh, k)
         if points:
             y = BY + (mh + gap if metrics else 0)
-            self.card(s, BX, y, BW, bottom - y, sd.get("points_label", "その他の効果"), points, header_fill=self.sub)
+            self.text(s, BX, y, BW, 0.35, [sd.get("points_label", "その他の効果")], size=13, bold=True,
+                      color=readable(self.base))
+            y += 0.42
+            n = len(points)
+            pw = (BW - gap * (n - 1)) / n
+            bf = tint(self.sub, 0.88)
+            for i, pt in enumerate(points):
+                x = BX + i * (pw + gap)
+                self.box(s, x, y, pw, bottom - y, fill=bf)
+                d = 0.34
+                self.icon(s, "check", x + 0.15, y + (bottom - y) / 2 - d / 2, d, color=readable(self.base, bf, 3.0), hole=bf)
+                self.text(s, x + 0.6, y + 0.05, pw - 0.72, bottom - y - 0.1, [pt], size=14,
+                          anchor=MSO_ANCHOR.MIDDLE, what="その他の効果")
 
     def s_options(self, sd):
         s = self.content_slide(sd)
@@ -906,7 +1071,8 @@ class Deck:
                 m = len(ach)
                 kw = (rw - gap * (m - 1)) / m
                 for i, k in enumerate(ach):
-                    self.kpi(s, rx + i * (kw + gap), y, kw, kh, k.get("value", ""), k.get("label", ""), k.get("highlight", False))
+                    self.kpi(s, rx + i * (kw + gap), y, kw, kh, k.get("value", ""), k.get("label", ""),
+                             k.get("highlight", False), icon=k.get("icon"))
                 y += kh + 0.25
             if cases:
                 self.card(s, rx, y, rw, bottom - y, sd.get("cases_label", "主な導入事例"), cases, header_fill=self.sub)
@@ -914,7 +1080,73 @@ class Deck:
     def s_bullets(self, sd):
         s = self.content_slide(sd)
         bottom = self.bottom_parts(s, sd)
-        self.text(s, BX, BY, BW, bottom - BY, sd.get("bullets") or [], size=16, bullet=True, spacing=0.6, what="本文")
+        lw = BW
+        if sd.get("image"):
+            lw = BW * 0.52
+            self.picture(s, sd["image"], BX + lw + 0.4, BY, BW - lw - 0.4, bottom - BY)
+        self.text(s, BX, BY, lw, bottom - BY, sd.get("bullets") or [], size=16, bullet=True, spacing=0.6, what="本文")
+
+    def s_visual(self, sd):
+        """画像を主役にするスライド（商品イメージ・画面イメージ・写真など）。1〜3枚を横に並べ、短い説明を添える"""
+        s = self.content_slide(sd)
+        bottom = self.bottom_parts(s, sd)
+        imgs = sd.get("images") or ([{"path": sd["image"], "caption": sd.get("caption", "")}] if sd.get("image") else [])
+        if not imgs:
+            WARNINGS.append(f"p.{self.page}「{self.cur_label}」: visual に images がありません。")
+            return
+        n = len(imgs)
+        gap = 0.4
+        cw = (BW - gap * (n - 1)) / n
+        cap_h = 0.75 if any(i.get("caption") for i in imgs) else 0
+        for i, im in enumerate(imgs):
+            x = BX + i * (cw + gap)
+            self.picture(s, im.get("path", ""), x, BY, cw, bottom - BY - cap_h - (0.1 if cap_h else 0), what=f"画像{i + 1}")
+            if im.get("caption"):
+                self.text(s, x, bottom - cap_h, cw, cap_h, [im["caption"]], size=14, bold=True,
+                          align=PP_ALIGN.CENTER, anchor=MSO_ANCHOR.MIDDLE, what=f"画像{i + 1}の説明")
+
+    def s_agenda(self, sd):
+        """目次。各セクションの番号・アイコン・見出しを並べ、資料全体の道筋を先に見せる"""
+        s = self.new_slide()
+        self.cur_label = sd.get("section") or "目次"
+        self.text(s, 0.5, 0.3, 12.3, 0.35, [sd.get("label", "AGENDA")], size=12, bold=True,
+                  color=readable(self.base), what="セクション名")
+        self.text(s, 0.5, 0.62, 12.3, 0.95, [sd.get("message", "本日の流れ")], size=24, bold=True,
+                  anchor=MSO_ANCHOR.MIDDLE, what="メッセージ")
+        self.box(s, 0.5, 1.6, 12.33, 0.04, fill=self.base)
+        items = sd.get("items")
+        if not items:
+            items = []
+            for o in self.data.get("slides") or []:
+                t = o.get("type")
+                if t in ("cover", "agenda"):
+                    continue
+                label = o.get("section") or DEFAULT_SECTIONS.get(t, "")
+                if label and (not items or items[-1]["label"] != label):
+                    items.append({"label": label, "icon": TYPE_ICONS.get(t)})
+        items = [i if isinstance(i, dict) else {"label": i} for i in items]
+        n = len(items)
+        cols = 1 if n <= 6 else 2
+        per = math.ceil(n / cols)
+        gapx = 0.6
+        cw = (BW - gapx * (cols - 1)) / cols
+        rh = min(0.95, (BOTTOM - BY) / max(per, 1))
+        d = min(0.62, rh - 0.2)
+        for i, it in enumerate(items):
+            c, r = divmod(i, per)
+            x, y = BX + c * (cw + gapx), BY + r * rh
+            self.text(s, x, y, 0.7, rh, [f"{i + 1:02d}"], size=20, bold=True, color=readable(self.base),
+                      anchor=MSO_ANCHOR.MIDDLE, what="目次")
+            ix = x + 0.75
+            if it.get("icon") and sd.get("icons", True) is not False:
+                self.badge_icon(s, it["icon"], ix, y + (rh - d) / 2, d)
+                ix += d + 0.25
+            paras = [{"text": it.get("label", ""), "bold": True}]
+            if it.get("text"):
+                paras.append({"text": it["text"], "scale": 0.75, "color": MUTED})
+            self.text(s, ix, y, x + cw - ix, rh, paras, size=18, anchor=MSO_ANCHOR.MIDDLE, spacing=0.05,
+                      min_size=12, what="目次")
+            self.box(s, x, y + rh - 0.02, cw, 0.012, fill=LINE_GRAY)
 
     # ---------------------------------------------------------------- build
     def build(self):
@@ -932,6 +1164,10 @@ class Deck:
             if fn is None:
                 sys.exit(f"[エラー] 未対応のスライド type です: {t!r}。使えるのは cover, " + ", ".join(DEFAULT_SECTIONS))
             fn(sd)
+            chars = self.page_chars.get(self.page, 0)
+            if t not in ("cover", "agenda") and chars > MAX_SLIDE_CHARS:
+                WARNINGS.append(f"p.{self.page}「{self.cur_label}」: 本文が約{chars}字あります（目安{MAX_SLIDE_CHARS}字以内）。"
+                                "書き込みすぎです。結論に関係しない情報を削るか、スライドを分けてください。")
         return self.prs
 
 
@@ -952,13 +1188,13 @@ def _looks_numeric(v):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="商品企画書 PPTX ビルダー")
+    ap = argparse.ArgumentParser(description="企画書・提案書 PPTX ビルダー")
     ap.add_argument("content", help="content.json のパス")
     ap.add_argument("-o", "--output", required=True, help="出力する .pptx のパス")
     args = ap.parse_args()
     with open(args.content, encoding="utf-8") as f:
         data = json.load(f)
-    deck = Deck(data)
+    deck = Deck(data, base_dir=os.path.dirname(os.path.abspath(args.content)))
     prs = deck.build()
     prs.save(args.output)
     print(f"[OK] {args.output} を作成しました（{deck.page} 枚）")
