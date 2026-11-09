@@ -61,22 +61,14 @@ Claude Code 2.1.275 以降なら、1行でも入れられます。
 
 ### フォルダをコピーして入れる
 
-プラグインを使わない場合は、スキルのフォルダを Claude Code が読み込む場所にコピーします。
+プラグインを使わない場合は、GitHub のリポジトリページの「Code」→「Download ZIP」でダウンロードして展開し、中の `skills/proposal-maker` フォルダを次のどちらかに置きます。
 
-**特定のプロジェクトだけで使う場合**
-```bash
-git clone https://github.com/Ebi-lock/work-proposal-maker.git
-mkdir -p <あなたのプロジェクト>/.claude/skills
-cp -r work-proposal-maker/skills/proposal-maker <あなたのプロジェクト>/.claude/skills/
-```
+| 使う範囲 | 置く場所 |
+|---|---|
+| 特定のプロジェクトだけ | `<あなたのプロジェクト>/.claude/skills/proposal-maker` |
+| すべてのプロジェクト | `~/.claude/skills/proposal-maker` |
 
-**すべてのプロジェクトで使う場合**
-```bash
-mkdir -p ~/.claude/skills
-cp -r work-proposal-maker/skills/proposal-maker ~/.claude/skills/
-```
-
-コピー後に Claude Code を起動し直すと、スキル一覧に `proposal-maker` が表示されます。
+置いたあとに Claude Code を起動し直すと、スキル一覧に `proposal-maker` が表示されます。
 
 ## 使い方
 
@@ -111,10 +103,7 @@ python3 scripts/build_deck.py assets/example_kikaku.json -o 企画書_サンプ�
 
 JSON の書き方は [`references/schema.md`](skills/proposal-maker/references/schema.md) を、完成例は `assets/` の3ファイルを参照してください。
 
-プレビュー（macOS ＋ PowerPoint）：
-```bash
-bash scripts/preview.sh 企画書_サンプル.pptx ./preview
-```
+見た目のプレビュー（`scripts/preview.sh`）は、macOS で PowerPoint がある場合に、Claude がスキルの手順の中で使います。
 
 ## ファイル構成
 
